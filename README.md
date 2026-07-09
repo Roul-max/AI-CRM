@@ -26,7 +26,7 @@ An AI-first CRM module for pharmaceutical sales representatives to log, manage, 
 | Frontend | React 18, TypeScript, TailwindCSS, Redux Toolkit |
 | Backend | FastAPI, Python 3.11 |
 | AI Orchestration | LangGraph (StateGraph) |
-| LLM Inference | Groq API (`llama-3.1-8b-instant`) |
+| LLM Inference | Groq API (`gemma2-9b-it`, `llama-3.3-70b-versatile`) |
 | Database | PostgreSQL, SQLAlchemy ORM, Alembic |
 | Streaming | Server-Sent Events (SSE) via FastAPI `StreamingResponse` |
 
@@ -155,12 +155,13 @@ npm install
 
 ## Environment Variables
 
-Create `backend/.env`:
+Create `backend/.env` (use `backend/.env.example` as reference):
 
 ```env
 DATABASE_URL=postgresql://postgres:password@localhost:5432/hcp_crm
 GROQ_API_KEY=gsk_your_groq_api_key_here
-PRIMARY_MODEL=llama-3.1-8b-instant
+PRIMARY_MODEL=gemma2-9b-it
+SECONDARY_MODEL=llama-3.3-70b-versatile
 ENVIRONMENT=development
 ```
 
@@ -180,10 +181,12 @@ CREATE DATABASE hcp_crm;
 alembic upgrade head
 ```
 
-This applies all 3 migrations:
+This applies all 5 migrations:
 - `0001` — base schema (users, hcps, interactions, products, competitors, followups)
 - `0002` — adds interaction columns (outcomes, interaction_type, duration, brochure_shared, samples_requested)
 - `0003` — adds `hcps.hospital` column
+- `0004` — ensures hcp hospital column
+- `0005` — ensures interaction columns
 
 ---
 
@@ -221,26 +224,11 @@ npm run build
 
 ---
 
-## Screenshots
-
-> Add screenshots here before submission.
-
-| Screen | Description |
-|---|---|
-| `screenshots/chat-extraction.png` | Chat panel after logging an interaction — form auto-filled |
-| `screenshots/form-populated.png` | InteractionForm with all 18 fields populated by AI |
-| `screenshots/save-success.png` | Toast notification after saving to PostgreSQL |
-| `screenshots/search-hcp.png` | HCP search result with meeting history |
-| `screenshots/meeting-summary.png` | 8-section meeting summary in chat |
-| `screenshots/followup-recommendation.png` | Follow-up recommendation with priority and risk |
-
----
-
 ## Demo Video
 
 > Add demo video link here before submission.
 
-**Suggested demo flow (matches assignment video requirements):**
+**Demo flow (matches assignment video requirements):**
 
 1. Type a meeting note → form auto-fills via `log_interaction`
 2. Correct a field via chat → `edit_interaction` updates only that field
@@ -256,14 +244,19 @@ npm run build
 ```
 ├── backend/
 │   ├── agents/
-│   │   └── graph.py                  # LangGraph StateGraph — intent → tool → END
+│   │   ├── graph.py                  # LangGraph StateGraph — intent → tool → END
+│   │   ├── llm.py                    # Groq LLM initialisation
+│   │   └── state.py                  # LangGraph state definition
 │   ├── alembic/
 │   │   └── versions/
-│   │       ├── 0001_initial.py
+│   │       ├── 0001_initial_schema.py
 │   │       ├── 0002_add_interaction_columns.py
-│   │       └── 0003_add_hcp_hospital.py
+│   │       ├── 0003_add_hcp_hospital.py
+│   │       ├── 0004_ensure_hcp_hospital.py
+│   │       └── 0005_ensure_interaction_columns.py
 │   ├── api/
 │   │   └── v1/
+│   │       ├── api.py                # Router registration
 │   │       └── endpoints/
 │   │           ├── chat.py           # SSE streaming endpoint
 │   │           └── interactions.py   # Save interaction endpoint
@@ -282,41 +275,49 @@ npm run build
 │   │   └── user.py                   # User ORM model
 │   ├── repositories/
 │   │   ├── hcp_repository.py         # HCP search with selectinload
-│   │   ├── interaction_repository.py
-│   │   └── followup_repository.py
+│   │   ├── interaction_repository.py # Interaction save logic
+│   │   └── followup_repository.py    # FollowUp queries
 │   ├── schemas/
 │   │   ├── extraction.py             # InteractionExtraction — 18-field Pydantic schema
 │   │   ├── interaction.py            # InteractionCreate / InteractionRead
 │   │   └── tools.py                  # HCPSearchResult, MeetingSummary, FollowUpRecommendation
 │   ├── tools/
 │   │   └── crm_tools.py              # 5 LangChain @tool implementations
-│   └── main.py                       # FastAPI app entry point
+│   ├── .env.example                  # Environment variable template
+│   ├── alembic.ini                   # Alembic config
+│   ├── main.py                       # FastAPI app entry point
+│   └── requirements.txt
 │
 ├── src/
 │   ├── components/
-│   │   ├── Layout.tsx                # App shell with ToastContainer
+│   │   ├── Layout.tsx                # App shell with header + ToastContainer
 │   │   └── ui/
 │   │       ├── ToastContainer.tsx    # Slide-in toast notifications
 │   │       └── skeleton.tsx          # Skeleton loading component
 │   ├── features/
 │   │   ├── chat/
-│   │   │   └── Chat.tsx              # Chat panel — messages + input
-│   │   ├── interactions/
-│   │   │   └── InteractionForm.tsx   # 18-field AI-populated form
-│   │   └── dashboard/
-│   │       └── Dashboard.tsx         # Main layout (Chat + Form side-by-side)
+│   │   │   └── Chat.tsx              # Chat panel — messages + SSE input
+│   │   └── interactions/
+│   │       └── InteractionForm.tsx   # 18-field AI-populated form
 │   ├── hooks/
 │   │   └── useChatStream.ts          # SSE stream hook with StreamPhase
+│   ├── lib/
+│   │   └── utils.ts                  # cn() utility
 │   ├── store/
 │   │   ├── index.ts                  # Redux store (interaction + chat + ui)
 │   │   ├── interactionSlice.ts       # Interaction state + saveInteraction thunk
 │   │   └── slices/
 │   │       ├── chatSlice.ts          # Chat message state
 │   │       └── uiSlice.ts            # Toast + isExtracting state
-│   └── App.tsx                       # Root component
+│   ├── App.tsx                       # Root component + routes
+│   ├── InteractionPage.tsx           # Main layout (Chat + Form side-by-side)
+│   ├── index.css                     # Global styles + design tokens
+│   └── main.tsx                      # React entry point
 │
-├── alembic.ini
+├── .gitignore
+├── index.html                        # Google Inter font loaded here
 ├── package.json
+├── tsconfig.json
 ├── vite.config.ts
 └── README.md
 ```
