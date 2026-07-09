@@ -15,7 +15,7 @@ An AI-first CRM module for pharmaceutical sales representatives to log, manage, 
 - **Meeting summary** — structured 8-section summary: HCP, Objective, Discussion, Products, Concerns, Outcomes, Actions, Follow-up
 - **Follow-up recommendations** — AI-generated priority, risk level, discussion topics, materials to send, and samples required
 - **Real-time streaming** — SSE stream with thinking/tool/extracting phase indicators and skeleton loading
-- **Toast notifications** — success/error feedback on extraction and save events
+- **Toast notifications** — success/error feedback on extraction and save events.
 
 ---
 
