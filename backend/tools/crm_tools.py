@@ -1,8 +1,11 @@
 import json
+import json as _json
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Generator, Optional, List
 
+from groq import RateLimitError
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
@@ -15,6 +18,13 @@ from backend.db.session import SessionLocal
 from backend.schemas.extraction import InteractionExtraction
 from backend.schemas.tools import HCPSearchResult, MeetingSummary, FollowUpRecommendation
 from backend.repositories import hcp_repository
+
+
+def _get_llm(temperature: float = 0):
+    """Returns primary model; falls back to secondary on rate limit when invoked."""
+    primary = ChatGroq(model=settings.PRIMARY_MODEL, temperature=temperature, groq_api_key=settings.GROQ_API_KEY)
+    secondary = ChatGroq(model=settings.SECONDARY_MODEL, temperature=temperature, groq_api_key=settings.GROQ_API_KEY)
+    return primary.with_fallbacks([secondary], exceptions_to_handle=(RateLimitError,))
 
 
 @contextmanager
@@ -182,8 +192,7 @@ def log_interaction(notes: str) -> str:
     Extracts structured information from natural language notes of a Healthcare Professional interaction.
     Does not save to the database. Returns a JSON object with the extracted data.
     """
-    llm = ChatGroq(model=settings.PRIMARY_MODEL, temperature=0, groq_api_key=settings.GROQ_API_KEY)
-    structured_llm = llm.with_structured_output(InteractionExtraction)
+    structured_llm = _get_llm(0).with_structured_output(InteractionExtraction)
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", _EXTRACTION_SYSTEM_PROMPT),
@@ -204,48 +213,79 @@ def log_interaction(notes: str) -> str:
 def edit_interaction(current_data_json: str, correction: str) -> str:
     """
     Edits a JSON object of extracted interaction data based on a user's natural language correction.
-    For instance, if the user says 'the doctor was actually Dr. John', it updates the hcp_name field.
-    Returns the full, updated JSON object.
+    Parses the correction with the LLM to get only the changed fields, then merges them
+    deterministically onto the existing data. Never re-extracts from scratch.
+    Returns the full updated JSON object.
     """
-    llm = ChatGroq(model=settings.PRIMARY_MODEL, temperature=0, groq_api_key=settings.GROQ_API_KEY)
-    structured_llm = llm.with_structured_output(InteractionExtraction)
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "You are a pharmaceutical CRM data correction AI.\n"
-         "You will receive a JSON object of extracted interaction data and a natural-language correction.\n"
-         "\n"
-         "FIELD NAME REFERENCE — use these exact keys:\n"
-         "  hcp_name, hospital, specialization, interaction_date, interaction_time,\n"
-         "  interaction_type, duration, attendees, products_discussed, competitors_mentioned,\n"
-         "  shared_materials, brochure_shared, samples_distributed, samples_requested,\n"
-         "  sentiment, risk, outcomes, follow_up_date, action_items, summary\n"
-         "\n"
-         "CORRECTION RULES:\n"
-         "1. Apply ONLY the changes described in the correction. Do not alter any other field.\n"
-         "2. Map natural language to the correct field key:\n"
-         "   'doctor name / HCP name' → hcp_name\n"
-         "   'follow-up / next visit date' → follow_up_date\n"
-         "   'products / drugs discussed' → products_discussed\n"
-         "   'type / how we met' → interaction_type\n"
-         "   'when / date of meeting' → interaction_date\n"
-         "3. Normalise values: dates → YYYY-MM-DD, time → HH:MM 24h, "
-         "duration → integer minutes, lists → JSON arrays, "
-         "sentiment → Positive/Neutral/Negative, "
-         "interaction_type → In-person/Virtual/Phone Call/Conference/Email.\n"
-         "4. Return the complete updated JSON object with ALL fields preserved."),
-        ("human", "Current extracted data:\n\n```json\n{current_data}\n```\n\nCorrection to apply: '{correction}'")
-    ])
-
-    chain = prompt | structured_llm
+    # ── 1. Parse current data ──────────────────────────────────────────────
     try:
-        llm_logger.info(f"edit_interaction: invoking {settings.PRIMARY_MODEL}")
-        updated_data = chain.invoke({"current_data": current_data_json, "correction": correction})
-        tool_logger.info("edit_interaction: correction applied")
-        return updated_data.model_dump_json(indent=2)
+        current = _json.loads(current_data_json)
+    except Exception:
+        return f"Invalid current_data_json: could not parse JSON."
+
+    # ── 2. Ask LLM only for the delta (changed fields) ────────────────────
+    llm = _get_llm(0)
+
+    system_msg = (
+        "You are a JSON patch generator for a pharmaceutical CRM.\n"
+        "Given the CURRENT interaction data and a CORRECTION instruction, "
+        "output ONLY the fields that need to change as a valid JSON object.\n\n"
+        "FIELD REFERENCE:\n"
+        "  hcp_name (str), hospital (str), specialization (str),\n"
+        "  interaction_date (YYYY-MM-DD), interaction_time (HH:MM),\n"
+        "  interaction_type (In-person|Virtual|Phone Call|Conference|Email),\n"
+        "  duration (integer minutes), attendees (array),\n"
+        "  products_discussed (array), competitors_mentioned (array),\n"
+        "  shared_materials (array), brochure_shared (bool),\n"
+        "  samples_distributed (array), samples_requested (bool),\n"
+        "  sentiment (Positive|Neutral|Negative), risk (Low|Medium|High),\n"
+        "  outcomes (str), follow_up_date (YYYY-MM-DD),\n"
+        "  action_items (array), summary (str)\n\n"
+        "LIST OPERATION RULES:\n"
+        "  - 'remove X' from a list: return the full list WITHOUT X\n"
+        "  - 'add X' to a list: return the full list WITH X appended\n"
+        "  - Always return the complete resulting array, not just the changed item\n\n"
+        "SCALAR RULES:\n"
+        "  - 'change duration to 50' -> output: {\"duration\": 50}\n"
+        "  - 'change sentiment to Neutral' -> output: {\"sentiment\": \"Neutral\"}\n"
+        "  - dates -> YYYY-MM-DD, duration -> integer minutes\n\n"
+        "OUTPUT: a single flat JSON object with ONLY the changed fields. "
+        "No markdown, no explanation, no code fences. Just the raw JSON object."
+    )
+
+    human_msg = (
+        f"CURRENT DATA:\n{_json.dumps(current, indent=2)}\n\n"
+        f"CORRECTION: {correction}\n\n"
+        "Respond with ONLY the JSON patch object."
+    )
+
+    try:
+        from langchain_core.messages import SystemMessage as LCSystemMessage, HumanMessage as LCHumanMessage
+        llm_logger.info(f"edit_interaction: invoking {settings.PRIMARY_MODEL} for delta")
+        raw = llm.invoke([LCSystemMessage(content=system_msg), LCHumanMessage(content=human_msg)])  # type: ignore[arg-type]
+        delta_str = raw.content.strip()
+        # Strip markdown code fences if present
+        delta_str = re.sub(r"^```(?:json)?\s*", "", delta_str, flags=re.MULTILINE)
+        delta_str = re.sub(r"```\s*$", "", delta_str, flags=re.MULTILINE).strip()
+        delta = _json.loads(delta_str)
     except Exception as e:
-        error_logger.error(f"edit_interaction failed: {e}")
-        return f"An unexpected error occurred during data correction: {e}"
+        error_logger.error(f"edit_interaction: delta parse failed: {e}")
+        return f"Could not parse correction: {e}"
+
+    # ── 3. Deterministic merge: apply delta onto current ──────────────────
+    merged = {**current}
+    for key, new_val in delta.items():
+        merged[key] = new_val
+
+    # ── 4. Validate through Pydantic (normalises dates, sentiment, etc.) ──
+    try:
+        validated = InteractionExtraction(**merged)
+        tool_logger.info("edit_interaction: merge complete")
+        return validated.model_dump_json(indent=2)
+    except Exception as e:
+        error_logger.error(f"edit_interaction: validation failed: {e}")
+        # Return merged dict directly if validation fails
+        return _json.dumps(merged, indent=2, default=str)
 
 @tool("search_hcp", args_schema=SearchHCPInput)
 def search_hcp(name: Optional[str] = None, specialty: Optional[str] = None, hospital: Optional[str] = None) -> str:
@@ -376,8 +416,7 @@ def meeting_summary(notes: str) -> str:
     Outcomes, Action Items, Follow-up.
     Use this when the user asks for a summary, recap, or overview of a meeting.
     """
-    llm = ChatGroq(model=settings.PRIMARY_MODEL, temperature=0, groq_api_key=settings.GROQ_API_KEY)
-    structured_llm = llm.with_structured_output(MeetingSummary)
+    structured_llm = _get_llm(0).with_structured_output(MeetingSummary)
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", _MEETING_SUMMARY_SYSTEM_PROMPT),
@@ -458,8 +497,7 @@ def follow_up_recommendation(notes: str) -> str:
     materials to send, samples required, and reasoning.
     Use this when the user asks for follow-up recommendations, next steps, or what to do after a meeting.
     """
-    llm = ChatGroq(model=settings.PRIMARY_MODEL, temperature=0.5, groq_api_key=settings.GROQ_API_KEY)
-    structured_llm = llm.with_structured_output(FollowUpRecommendation)
+    structured_llm = _get_llm(0.5).with_structured_output(FollowUpRecommendation)
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", _FOLLOWUP_RECOMMENDATION_SYSTEM_PROMPT),

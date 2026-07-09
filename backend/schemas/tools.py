@@ -1,6 +1,8 @@
-from pydantic import BaseModel, Field
+import re
+from datetime import date, datetime, timedelta
 from typing import List, Optional
-from datetime import date, datetime
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class HCPSearchResult(BaseModel):
@@ -119,7 +121,7 @@ class FollowUpRecommendation(BaseModel):
             "Low: HCP was uninterested, no commitments made, or relationship is stable."
         )
     )
-    suggested_follow_up_date: date = Field(
+    suggested_follow_up_date: str = Field(
         description=(
             "Recommended date for the next contact. "
             "Base this on any follow-up timeline mentioned in the notes "
@@ -129,6 +131,30 @@ class FollowUpRecommendation(BaseModel):
             "Output as YYYY-MM-DD."
         )
     )
+
+    @field_validator("suggested_follow_up_date", mode="before")
+    @classmethod
+    def coerce_date(cls, v: object) -> str:
+        if isinstance(v, (date, datetime)):
+            return v.strftime("%Y-%m-%d")
+        s = str(v).strip()
+        # Already ISO
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+            return s
+        # Try common formats
+        for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y", "%d %B %Y"):
+            try:
+                return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+        # Relative: "in N days/weeks/months"
+        m = re.search(r"in\s+(\d+)\s+(day|week|month)", s, re.I)
+        if m:
+            n, unit = int(m.group(1)), m.group(2).lower()
+            delta = timedelta(days=n if unit == "day" else n * 7 if unit == "week" else n * 30)
+            return (date.today() + delta).strftime("%Y-%m-%d")
+        # Fallback: 14 days from today
+        return (date.today() + timedelta(days=14)).strftime("%Y-%m-%d")
     risk_level: str = Field(
         description=(
             "Risk to the sales relationship or prescribing intent. "

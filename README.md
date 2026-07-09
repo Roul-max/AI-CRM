@@ -26,7 +26,7 @@ An AI-first CRM module for pharmaceutical sales representatives to log, manage, 
 | Frontend | React 18, TypeScript, TailwindCSS, Redux Toolkit |
 | Backend | FastAPI, Python 3.11 |
 | AI Orchestration | LangGraph (StateGraph) |
-| LLM Inference | Groq API (`gemma2-9b-it`, `llama-3.3-70b-versatile`) |
+| LLM Inference | Groq API (`llama-3.3-70b-versatile`, `llama-3.1-8b-instant`) |
 | Database | PostgreSQL, SQLAlchemy ORM, Alembic |
 | Streaming | Server-Sent Events (SSE) via FastAPI `StreamingResponse` |
 
@@ -160,8 +160,8 @@ Create `backend/.env` (use `backend/.env.example` as reference):
 ```env
 DATABASE_URL=postgresql://postgres:password@localhost:5432/hcp_crm
 GROQ_API_KEY=gsk_your_groq_api_key_here
-PRIMARY_MODEL=gemma2-9b-it
-SECONDARY_MODEL=llama-3.3-70b-versatile
+PRIMARY_MODEL=llama-3.3-70b-versatile
+SECONDARY_MODEL=llama-3.1-8b-instant
 ENVIRONMENT=development
 ```
 

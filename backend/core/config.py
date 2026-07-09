@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     # LLM
     GROQ_API_KEY: Optional[str] = None
-    PRIMARY_MODEL: str = "gemma2-9b-it"
+    PRIMARY_MODEL: str = "llama-3.3-70b-versatile"
     SECONDARY_MODEL: str = "llama-3.3-70b-versatile"
 
     # Environment

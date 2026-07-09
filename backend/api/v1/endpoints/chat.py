@@ -5,22 +5,23 @@ from typing import List, Optional
 from fastapi.responses import StreamingResponse
 from backend.agents.graph import graph
 from backend.core.logging import stream_logger, error_logger
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 router = APIRouter()
 
 
 class ChatMessage(BaseModel):
-    role: str  # "user" or "assistant"
+    role: str
     content: str
 
 
 class ChatInput(BaseModel):
     message: str
     history: Optional[List[ChatMessage]] = []
+    current_interaction_json: Optional[str] = None
 
 
-async def agent_event_stream(input_message: str, history: List[ChatMessage]):
+async def agent_event_stream(input_message: str, history: List[ChatMessage], current_interaction_json: Optional[str]):
     """Streams events from the LangGraph agent."""
     messages = []
     for msg in (history or []):
@@ -28,6 +29,14 @@ async def agent_event_stream(input_message: str, history: List[ChatMessage]):
             messages.append(HumanMessage(content=msg.content))
         elif msg.role == "assistant":
             messages.append(AIMessage(content=msg.content))
+
+    # Inject current interaction JSON as a system message so the LLM
+    # can reliably pass it as current_data_json to edit_interaction.
+    if current_interaction_json:
+        messages.append(SystemMessage(
+            content=f"CURRENT INTERACTION DATA (use this as current_data_json for edit_interaction):\n{current_interaction_json}"
+        ))
+
     messages.append(HumanMessage(content=input_message))
 
     input_data = {"messages": messages}
@@ -45,14 +54,12 @@ async def agent_event_stream(input_message: str, history: List[ChatMessage]):
         elif kind == "on_tool_end":
             stream_logger.info(f"stream: tool_end name={event['name']}")
             raw = event["data"].get("output")
-            # astream_events v2 returns a ToolMessage object; extract its .content
             if hasattr(raw, "content"):
                 output = raw.content
             elif raw is not None:
                 output = raw
             else:
                 output = None
-            # Ensure it is JSON-serialisable
             if output is not None:
                 try:
                     json.dumps(output)
@@ -65,12 +72,8 @@ async def agent_event_stream(input_message: str, history: List[ChatMessage]):
 
 @router.post("/stream")
 async def stream_chat(request: ChatInput):
-    """
-    Streams the AI agent's response for a user message.
-    Accepts optional conversation history for context (needed for edit_interaction).
-    """
     return StreamingResponse(
-        agent_event_stream(request.message, request.history or []),
+        agent_event_stream(request.message, request.history or [], request.current_interaction_json),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

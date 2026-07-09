@@ -1,6 +1,7 @@
 import operator
 from typing import Annotated, List
 
+from groq import RateLimitError
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langchain_groq import ChatGroq
 from langgraph.graph import END, StateGraph
@@ -20,7 +21,10 @@ You have access to these tools:
   products discussed, competitors, materials shared, samples distributed, sentiment, outcomes,
   follow-up date, follow-up actions, and attendees.
 - edit_interaction: Use when the user wants to correct or update previously extracted data.
-  Pass the full current JSON as `current_data_json` and the user's correction as `correction`.
+  Pass the full current JSON as `current_data_json` — extract it from the most recent
+  assistant message that contains a JSON object (starts with '{').
+  If no JSON is found in history, pass an empty JSON object '{}'.
+  Pass the user's correction text as `correction`.
 - search_hcp: Use when the user wants to find or look up a Healthcare Professional by name or specialty.
 - meeting_summary: Use when the user asks for a summary of a meeting.
 - follow_up_recommendation: Use when the user asks for follow-up recommendations or next steps.
@@ -45,6 +49,12 @@ model = ChatGroq(
     groq_api_key=settings.GROQ_API_KEY,
 ).bind_tools(all_tools)
 
+fallback_model = ChatGroq(
+    model=settings.SECONDARY_MODEL,
+    temperature=0,
+    groq_api_key=settings.GROQ_API_KEY,
+).bind_tools(all_tools)
+
 standard_tool_node = ToolNode(all_tools)
 
 DATA_EXTRACTION_TOOLS = {
@@ -57,12 +67,16 @@ DATA_EXTRACTION_TOOLS = {
 
 
 def intent_node(state: AgentState):
-    """Calls the LLM with the system prompt prepended."""
+    """Calls the LLM with the system prompt prepended. Falls back to secondary model on rate limit."""
     messages = state["messages"]
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [SystemMessage(content=SYSTEM_PROMPT)] + list(messages)
-    llm_logger.info(f"intent_node: invoking {settings.PRIMARY_MODEL} with {len(messages)} messages")
-    response = model.invoke(messages)
+    try:
+        llm_logger.info(f"intent_node: invoking {settings.PRIMARY_MODEL} with {len(messages)} messages")
+        response = model.invoke(messages)
+    except RateLimitError:
+        llm_logger.warning(f"intent_node: {settings.PRIMARY_MODEL} rate limited — falling back to {settings.SECONDARY_MODEL}")
+        response = fallback_model.invoke(messages)
     llm_logger.info(f"intent_node: response tool_calls={bool(getattr(response, 'tool_calls', None))}")
     return {"messages": [response]}
 

@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { useDispatch } from 'react-redux';
-import { setInteractionData, InteractionData } from '../store/interactionSlice';
+import { useDispatch, useSelector } from 'react-redux';
+import { setInteractionData, updateField, InteractionData } from '../store/interactionSlice';
 import { addToast, setExtracting } from '../store/slices/uiSlice';
-import { AppDispatch } from '../store/index';
+import { AppDispatch, RootState } from '../store/index';
 
 export type StreamPhase = 'idle' | 'thinking' | 'tool' | 'extracting' | 'streaming';
 
@@ -35,6 +35,7 @@ export const useChatStream = () => {
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const dispatch = useDispatch<AppDispatch>();
+  const currentInteractionData = useSelector((state: RootState) => state.interaction.data);
 
   const sendMessage = async (messageContent: string) => {
     if (!messageContent.trim()) return;
@@ -64,7 +65,13 @@ export const useChatStream = () => {
       const response = await fetch('/api/v1/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: messageContent, history }),
+        body: JSON.stringify({
+          message: messageContent,
+          history,
+          current_interaction_json: currentInteractionData.hcp_name
+            ? JSON.stringify(currentInteractionData)
+            : null,
+        }),
       });
 
       if (!response.ok) throw new Error(`Server error: ${response.status}`);
@@ -168,6 +175,16 @@ export const useChatStream = () => {
                       msg.id === assistantMessageId ? { ...msg, content: text } : msg
                     )
                   );
+                  // Populate only the summary field in the form
+                  if (s.outcomes) dispatch(updateField({ key: 'outcomes', value: s.outcomes }));
+                  if (s.action_items?.length) dispatch(updateField({ key: 'action_items', value: s.action_items }));
+                  if (s.follow_up) dispatch(updateField({ key: 'follow_up_date', value: s.follow_up }));
+                  const summaryText = [
+                    s.hcp ? `HCP: ${s.hcp}` : null,
+                    s.objective ? `Objective: ${s.objective}` : null,
+                    s.outcomes ? `Outcomes: ${s.outcomes}` : null,
+                  ].filter(Boolean).join('\n');
+                  if (summaryText) dispatch(updateField({ key: 'summary', value: summaryText }));
                 } catch { /* ignore */ }
               } else if (toolName === 'follow_up_recommendation' && output) {
                 try {
@@ -187,6 +204,9 @@ export const useChatStream = () => {
                       msg.id === assistantMessageId ? { ...msg, content: text } : msg
                     )
                   );
+                  // Populate follow-up fields in the form
+                  if (rec.suggested_follow_up_date) dispatch(updateField({ key: 'follow_up_date', value: rec.suggested_follow_up_date }));
+                  if (rec.discussion_topics?.length) dispatch(updateField({ key: 'action_items', value: rec.discussion_topics }));
                 } catch { /* ignore */ }
               }
             }

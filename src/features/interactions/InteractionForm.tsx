@@ -355,7 +355,7 @@ const InteractionForm: React.FC = () => {
               fontSize: 11, fontWeight: 500, color: 'var(--t3)',
             }}>
               <Sparkles style={{ width: 10, height: 10, color: 'var(--brand)' }} />
-              {filledCount} fields extracted
+              ✓ {filledCount} fields extracted
             </span>
           )}
         </div>
@@ -432,7 +432,24 @@ const InteractionForm: React.FC = () => {
         <span style={{ flex: 1, fontSize: 11, color: 'var(--t4)' }}>
           {isEmpty
             ? 'Use the AI chat to auto-fill this form'
-            : `${filledCount} of ${Object.keys(data).length} fields populated`}
+            : (() => {
+                const confidence = filledCount >= 16 ? 'High' : filledCount >= 10 ? 'Medium' : 'Low';
+                const color = confidence === 'High' ? '#16a34a' : confidence === 'Medium' ? '#d97706' : '#dc2626';
+                return (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ color, fontWeight: 600 }}>✓ AI extracted</span>
+                    <span style={{ color: 'var(--t3)' }}>{filledCount} of {Object.keys(data).length} fields</span>
+                    <span style={{
+                      padding: '1px 6px', borderRadius: 99, fontSize: 10, fontWeight: 600,
+                      background: confidence === 'High' ? '#f0fdf4' : confidence === 'Medium' ? '#fffbeb' : '#fef2f2',
+                      color,
+                      border: `1px solid ${confidence === 'High' ? '#bbf7d0' : confidence === 'Medium' ? '#fde68a' : '#fecaca'}`,
+                    }}>
+                      {confidence} confidence
+                    </span>
+                  </span>
+                );
+              })()}
         </span>
 
         <button
